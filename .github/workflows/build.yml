@@ -1,0 +1,45 @@
+name: Build (linux, all targets, all haxe versions)
+
+on: [push, repository_dispatch]
+
+jobs:
+  build:
+
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        haxe-version: [3.4.4, 4.0.3]
+        target: [html5, linux]
+
+    steps:
+    - uses: actions/checkout@v1
+    - uses: haxeui/haxeui-core/.github/actions/haxe@master
+      with:
+        haxe-version: ${{ matrix.haxe-version }}
+
+    - name: Setup app (haxe ${{ matrix.haxe-version }}, ${{ matrix.os }})
+      run: |
+        sudo apt-get install libxinerama-dev
+        sudo apt-get install libasound2-dev
+        sudo apt-get install mesa-common-dev
+        sudo apt-get install libgl-dev
+        sudo apt-get install libxi-dev
+        sudo apt-get install zip
+        git clone --recursive --single-branch --depth=1 https://github.com/Kode/Kha.git
+        mkdir Libraries
+        cd Libraries
+        git clone --single-branch --depth=1 https://github.com/haxeui/haxeui-core.git
+        git clone --single-branch --depth=1 https://github.com/haxeui/haxeui-kha.git
+        git clone --single-branch --depth=1 https://github.com/haxefoundation/hscript.git
+        cd ..
+        mkdir src
+        cd src
+        printf "package;\n\nclass Main {\npublic static function main() {\n}\n}" > Main.hx
+        cd ..
+        cp Libraries/haxeui-kha/khafile.js khafile.js
+
+    - name: Build app (${{ matrix.target }}, haxe ${{ matrix.haxe-version }}, ${{ matrix.os }})
+      run: |
+        node Kha/make ${{ matrix.target }} --compile

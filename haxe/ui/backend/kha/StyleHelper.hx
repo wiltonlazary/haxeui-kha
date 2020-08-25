@@ -13,22 +13,33 @@ import kha.graphics2.Graphics;
 
 class StyleHelper {
     public static function paintStyle(g:Graphics, style:Style, x:Float, y:Float, w:Float, h:Float):Void {
-        /*
         x = Math.ffloor(x);
         y = Math.ffloor(y);
         w = Math.fceil(w);
         h = Math.fceil(h);
-        */
 
         if (w <= 0 || h <= 0) {
             return;
         }
 
+        /*
+        x = Std.int(x);
+        y = Std.int(y);
+        w = Std.int(w);
+        h = Std.int(h);
+        */
+        
+        x *= Toolkit.scaleX;
+        y *= Toolkit.scaleY;
+        w *= Toolkit.scaleX;
+        h *= Toolkit.scaleY;
+        
         var orgX = x;
         var orgY = y;
         var orgW = w;
         var orgH = h;
 
+        
         var alpha:Int = 0xFF000000;
         if (style.backgroundColor != null) {
             if (style.backgroundColorEnd != null && style.backgroundColor != style.backgroundColorEnd) {
@@ -65,6 +76,9 @@ class StyleHelper {
         
         if (style.backgroundImage != null) {
             Toolkit.assets.getImage(style.backgroundImage, function(imageInfo:ImageInfo) {
+                if (imageInfo == null) {
+                    return;
+                }
                 var trc:Rectangle = new Rectangle(0, 0, imageInfo.width, imageInfo.height);
                 if (style.backgroundImageClipTop != null
                     && style.backgroundImageClipLeft != null
@@ -113,38 +127,35 @@ class StyleHelper {
             && style.borderLeftColor == style.borderBottomColor
             && style.borderLeftColor == style.borderTopColor) { // full border
 
-            var borderSize:Int = Std.int(style.borderLeftSize);
+            var borderSize:Int = Std.int(style.borderLeftSize * Toolkit.scale);
             g.color = style.borderLeftColor | alpha;
-            for (i in 0...borderSize) {
-                g.drawRect(x + .0 + 1, y + .0, w - 1, h - 1, 1);
-                x++;
-                y++;
-                w -= 2;
-                h -= 2;
-            }
-            g.color = Color.White;
+            g.fillRect(x, y, w, borderSize); // top
+            g.fillRect(x, y + h - borderSize, w, borderSize); // bottom
+            g.fillRect(x, y, borderSize, h); // left
+            g.fillRect(x + w - borderSize, y, borderSize, h); // right
+            g.color = Color.White;    
         } else { // compound border
             if (style.borderTopSize != null && style.borderTopSize > 0) {
                 g.color = style.borderTopColor | alpha;
-                g.fillRect(x, y, w, style.borderTopSize); // top
+                g.fillRect(x, y, w, (style.borderTopSize * Toolkit.scale)); // top
                 g.color = Color.White;
             }
             
             if (style.borderBottomSize != null && style.borderBottomSize > 0) {
                 g.color = style.borderBottomColor | alpha;
-                g.fillRect(x, y + h - style.borderBottomSize, w, style.borderBottomSize); // bottom
+                g.fillRect(x, y + h - (style.borderBottomSize * Toolkit.scale), w, (style.borderBottomSize * Toolkit.scale)); // bottom
                 g.color = Color.White;
             }
 
             if (style.borderLeftSize != null && style.borderLeftSize > 0) {
                 g.color = style.borderLeftColor | alpha;
-                g.fillRect(x, y, style.borderLeftSize, h); // left
+                g.fillRect(x, y, (style.borderLeftSize * Toolkit.scale), h); // left
                 g.color = Color.White;
             }
             
             if (style.borderRightSize != null && style.borderRightSize > 0) {
                 g.color = style.borderRightColor | alpha;
-                g.fillRect(x + w - style.borderRightSize, y, style.borderRightSize, h + 1); // right
+                g.fillRect(x + w - (style.borderRightSize * Toolkit.scale), y, (style.borderRightSize * Toolkit.scale), h); // right
                 g.color = Color.White;
             }
         }        
@@ -160,9 +171,31 @@ class StyleHelper {
                 }
             }
         }
+
+        /*
+        drawCircle(g, x, y, 2 * Toolkit.scale + 1);
+        */
     }
 
+    private static function drawCircle(g:Graphics, xm:Float, ym:Float, r:Float) {
+        var x = -r;
+        var y = 0;
+        var err = 2 - 2 * r;
+        do {
+            g.drawRect(xm - x, ym + y, Toolkit.scale - 1, Toolkit.scale - 1); // BR
+            g.drawRect(xm - y, ym - x, Toolkit.scale - 1, Toolkit.scale - 1); // BL
+            g.drawRect(xm + x, ym - y, Toolkit.scale - 1, Toolkit.scale - 1); // TL
+            g.drawRect(xm + y, ym + x, Toolkit.scale - 1, Toolkit.scale - 1); // TR
+            
+            
+            r = err;
+            if (r <= y) err += ++y * 2 + 1;
+            if (r > x || err > y) err += ++x * 2 + 1;
+        } while (x < 0);
+    }
+    
     private static function drawShadow(g:Graphics, color:Int, x:Float, y:Float, w:Float, h:Float, size:Int, inset:Bool = false):Void {
+        size = Std.int(size * Toolkit.scale);
         if (inset == false) {
             for (i in 0...size) {
                 g.color = color | 0x30000000;

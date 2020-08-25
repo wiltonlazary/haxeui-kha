@@ -1,5 +1,6 @@
 package haxe.ui.backend;
 
+import haxe.Timer;
 import haxe.ui.backend.kha.StyleHelper;
 import haxe.ui.core.Component;
 import haxe.ui.core.Screen;
@@ -8,53 +9,112 @@ import haxe.ui.events.MouseEvent;
 import haxe.ui.events.UIEvent;
 import haxe.ui.geom.Rectangle;
 import haxe.ui.styles.Style;
+import haxe.ui.util.MathUtil;
 import kha.Color;
 import kha.graphics2.Graphics;
+import kha.graphics2.ImageScaleQuality;
 import kha.input.KeyCode;
 import kha.input.Keyboard;
 import kha.input.Mouse;
 
 class ComponentImpl extends ComponentBase {
-    //public var parent:ComponentBase;
     private var _eventMap:Map<String, UIEvent->Void>;
 
     private var lastMouseX = -1;
     private var lastMouseY = -1;
+	
+	// For doubleclick detection
+	private var _lastClickTime:Float = 0;
+	private var _lastClickTimeDiff:Float = MathUtil.MAX_INT;
+	private var _lastClickX:Int = -1;
+	private var _lastClickY:Int = -1;
 
     public function new() {
         super();
         _eventMap = new Map<String, UIEvent->Void>();
+        
+        #if (kha_android || kha_android_native || kha_ios)
+        cast(this, Component).addClass(":mobile");
+        #end
     }
 
-    public var screenX(get, null):Float;
-    private function get_screenX():Float {
+    // lets cache certain items so we dont have to loop multiple times per frame
+    private var _cachedScreenX:Null<Float> = null;
+    private var _cachedScreenY:Null<Float> = null;
+    private var _cachedClipComponent:Component = null;
+    private var _cachedClipComponentNone:Null<Bool> = null;
+    private var _cachedRootComponent:Component = null;
+    private var _cachedOpacity:Null<Float> = null;
+    
+    private function clearCaches() {
+        _cachedScreenX = null;
+        _cachedScreenY = null;
+        _cachedClipComponent = null;
+        _cachedClipComponentNone = null;
+        _cachedRootComponent = null;
+        _cachedOpacity = null;
+    }
+    
+    private function cacheScreenPos() {
+        if (_cachedScreenX != null && _cachedScreenY != null) {
+            return;
+        }
+        
         var c:Component = cast(this, Component);
         var xpos:Float = 0;
-        while (c != null) {
-            xpos += Math.fceil(c.left);
-            if (c.componentClipRect != null) {
-                xpos -= Math.fceil(c.componentClipRect.left);
-            }
-            c = c.parentComponent;
-        }
-        return xpos;
-    }
-
-    public var screenY(get, null):Float;
-    private function get_screenY():Float {
-        var c:Component = cast(this, Component);
         var ypos:Float = 0;
         while (c != null) {
+            xpos += c.left;
             ypos += c.top;
             if (c.componentClipRect != null) {
+                xpos -= c.componentClipRect.left;
                 ypos -= c.componentClipRect.top;
             }
             c = c.parentComponent;
         }
-        return ypos;
+        
+        _cachedScreenX = xpos;
+        _cachedScreenY = ypos;
+    }
+    
+    private var screenX(get, null):Float;
+    private function get_screenX():Float {
+        cacheScreenPos();
+        return _cachedScreenX;
     }
 
-    public function findClipComponent():Component {
+    private var screenY(get, null):Float;
+    private function get_screenY():Float {
+        cacheScreenPos();
+        return _cachedScreenY;
+    }
+
+    private function findRootComponent():Component {
+        if (_cachedRootComponent != null) {
+            return _cachedRootComponent;
+        }
+        
+        var c:Component = cast(this, Component);
+        while (c.parentComponent != null) {
+            c = c.parentComponent;
+        }
+        
+        _cachedRootComponent = c;
+        
+        return c;
+    }
+    
+    private function isRootComponent():Bool {
+        return (findRootComponent() == this);
+    }
+    
+    private function findClipComponent():Component {
+        if (_cachedClipComponent != null) {
+            return _cachedClipComponent;
+        } else if (_cachedClipComponentNone == true) {
+            return null;
+        }
+        
         var c:Component = cast(this, Component);
         var clip:Component = null;
         while (c != null) {
@@ -65,6 +125,11 @@ class ComponentImpl extends ComponentBase {
             c = c.parentComponent;
         }
 
+        _cachedClipComponent = clip;
+        if (clip == null) {
+            _cachedClipComponentNone = true;
+        }
+        
         return clip;
     }
 
@@ -105,6 +170,10 @@ class ComponentImpl extends ComponentBase {
     // Style related
     //***********************************************************************************************************
     private function calcOpacity():Float {
+        if (_cachedOpacity != null) {
+            return _cachedOpacity;
+        }
+        
         var opacity:Float = 1;
         var c:Component = cast(this, Component);
         while (c != null) {
@@ -113,73 +182,244 @@ class ComponentImpl extends ComponentBase {
             }
             c = c.parentComponent;
         }
+        
+        _cachedOpacity = opacity;
+        
         return opacity;
     }
 
+    private function isOffscreen():Bool {
+        var x:Float = screenX;
+        var y:Float = screenY;
+        var w:Float = this.width;
+        var h:Float = this.height;
+        
+        var clipComponent = findClipComponent();
+        var thisRect = new Rectangle(x, y, w, h);
+        if (clipComponent != null && clipComponent != this) {
+            var screenClipRect = new Rectangle(clipComponent.screenX + clipComponent.componentClipRect.left, clipComponent.screenY + clipComponent.componentClipRect.top, clipComponent.componentClipRect.width, clipComponent.componentClipRect.height);
+            return !screenClipRect.intersects(thisRect);
+        } else {
+            var screenRect = new Rectangle(0, 0, Screen.instance.width, Screen.instance.height);
+            return !screenRect.intersects(thisRect);
+        }
+        
+        return false;
+    }
+    
+    private var _batchStyleOperations:Array<BatchOperation>;
+    private var _batchImageOperations:Array<BatchOperation>;
+    private var _batchTextOperations:Array<BatchOperation>;
+    private function clearBatchOperations() {
+        findRootComponent()._batchStyleOperations = [];
+        findRootComponent()._batchImageOperations = [];
+        findRootComponent()._batchTextOperations = [];
+    }
+    
+    private function addBatchStyleOperation(op:BatchOperation) {
+        findRootComponent()._batchStyleOperations.push(op);
+    }
+
+    private function addBatchImageOperation(op:BatchOperation) {
+        findRootComponent()._batchImageOperations.push(op);
+    }
+
+    private function addBatchTextOperation(op:BatchOperation) {
+        findRootComponent()._batchTextOperations.push(op);
+    }
+
+    private static inline function useBatching() {
+        if (Screen.instance.options == null) {
+            return true;
+        }
+        if (Screen.instance.options.noBatch == true) {
+            return false;
+        }
+        return true;
+    }
+    
     @:access(haxe.ui.core.Component)
     public function renderTo(g:Graphics) {
-        if (cast(this, Component).isReady == false || cast(this, Component).hidden == true) {
+        if (this.isReady == false || cast(this, Component).hidden == true) {
             return;
         }
-
-        var x:Int = Math.floor(screenX);
-        var y:Int = Math.floor(screenY);
-        var w:Int = Math.ceil(cast(this, Component).componentWidth);
-        var h:Int = Math.ceil(cast(this, Component).componentHeight);
-
-        var style:Style = cast(this, Component).style;
+        
+        clearCaches();
+        
+        if (isOffscreen() == true) {
+            return;
+        }
+        
+        if (useBatching() == true && isRootComponent()) {
+            clearBatchOperations();
+        }
+        
+        var x:Float = screenX;
+        var y:Float = screenY;
+        var w:Float = this.width;
+        var h:Float = this.height;
+        
+        var style:Style = this.style;
         if (style == null) {
             return;
         }
+        
         var clipRect:Rectangle = cast(this, Component).componentClipRect;
-
         if (clipRect != null) {
-            g.scissor(Math.floor(x + clipRect.left), Math.floor(y + clipRect.top), Math.ceil(clipRect.width), Math.ceil(clipRect.height));
+            var clx = Std.int((x + clipRect.left) * Toolkit.scaleX);
+            var cly = Std.int((y + clipRect.top) * Toolkit.scaleY);
+            var clw = Math.ceil(clipRect.width * Toolkit.scaleX);
+            var clh = Math.ceil(clipRect.height * Toolkit.scaleY);
+            if (useBatching() == true) {
+                addBatchStyleOperation(ApplyScissor(clx, cly, clw, clh));
+                addBatchImageOperation(ApplyScissor(clx, cly, clw, clh));
+                addBatchTextOperation(ApplyScissor(clx, cly, clw, clh));
+            } else {
+                if (clw >= 0 && clh >= 0) {
+                    g.scissor(clx, cly, clw, clh);
+                }
+            }
+        }
+        
+        if (useBatching() == true) {
+            addBatchStyleOperation(DrawStyle(this));
+        } else {
+            renderStyleTo(g, this);
         }
 
-        var opacity = calcOpacity();
-        g.opacity = opacity;
-        StyleHelper.paintStyle(g, style, x, y, w, h);
-
         if (_imageDisplay != null && _imageDisplay._buffer != null) {
-            if (_imageDisplay.scaled == true) {
-                g.drawScaledImage(_imageDisplay._buffer, x + _imageDisplay.left, y + _imageDisplay.top, _imageDisplay.imageWidth, _imageDisplay.imageHeight);
+            if (useBatching() == true) {
+                addBatchImageOperation(DrawImage(this));
             } else {
-                g.drawImage(_imageDisplay._buffer, x + _imageDisplay.left, y + _imageDisplay.top);
+                renderImageTo(g, this);
             }
         }
 
+        if (_textDisplay != null || _textInput != null) {
+            if (useBatching() == true) {
+                addBatchTextOperation(DrawText(this));
+            } else {
+                renderTextTo(g, this);
+            }
+        }
+
+        for (c in cast(this, Component).childComponents) {
+            c.renderTo(g);
+        }
+
+        if (useBatching() == false) {
+            g.opacity = 1;
+        }
+        
+        if (clipRect != null) {
+            if (useBatching() == true) {
+                addBatchStyleOperation(ClearScissor);
+                addBatchImageOperation(ClearScissor);
+                addBatchTextOperation(ClearScissor);
+            } else {
+                g.disableScissor();
+            }
+        }
+        
+        if (useBatching() == true && isRootComponent()) {
+            renderToBatch(g);
+        }
+        
+        clearCaches();
+    }
+    
+    private function renderToBatch(g:Graphics) {
+        renderToBatchOperations(g, _batchStyleOperations);
+        renderToBatchOperations(g, _batchImageOperations);
+        renderToBatchOperations(g, _batchTextOperations);
+    }
+    
+    private function renderToBatchOperations(g:Graphics, operations:Array<BatchOperation>) {
+        for (op in operations) {
+            switch (op) {
+                case ApplyScissor(sx, sy, sw, sh):
+                    if (sw >= 0 && sh >= 0) {
+                        g.scissor(sx, sy, sw, sh);
+                    }
+                case DrawStyle(c):
+                    renderStyleTo(g, c);
+                case DrawImage(c):
+                    renderImageTo(g, c);
+                case DrawText(c):    
+                    renderTextTo(g, c);
+                case ClearScissor:
+                    g.disableScissor();
+            }
+        }
+    }
+    
+    private function renderStyleTo(g:Graphics, c:ComponentImpl) {
+        g.opacity = c.calcOpacity();
+        var x:Float = c.screenX;
+        var y:Float = c.screenY;
+        var w:Float = c.width;
+        var h:Float = c.height;
+        var style:Style = c.style;
+        
+        StyleHelper.paintStyle(g, style, x, y, w, h);
+        
+        g.opacity = 1;
+    }
+    
+    private function renderImageTo(g:Graphics, c:ComponentImpl) {
+        g.opacity = c.calcOpacity();
+        
+        var x:Float = c.screenX;
+        var y:Float = c.screenY;
+        var w:Float = c.width;
+        var h:Float = c.height;
+        var imageX = (x + c._imageDisplay.left) * Toolkit.scaleX;
+        var imageY = (y + c._imageDisplay.top) * Toolkit.scaleY;
+        var orgScaleQuality = g.imageScaleQuality;
+        g.imageScaleQuality = ImageScaleQuality.High;
+        if (c._imageDisplay.scaled == true) {
+            g.drawScaledImage(c._imageDisplay._buffer, imageX, imageY, c._imageDisplay.imageWidth, c._imageDisplay.imageHeight);
+        } else if (Toolkit.scale != 1) {
+            g.drawScaledImage(c._imageDisplay._buffer, imageX, imageY, c._imageDisplay.imageWidth * Toolkit.scaleX, c._imageDisplay.imageHeight * Toolkit.scaleY);
+        } else {
+            g.drawImage(c._imageDisplay._buffer, imageX, imageY);
+        }
+        g.imageScaleQuality = orgScaleQuality;
+        
+        g.opacity = 1;
+    }
+    
+    private function renderTextTo(g:Graphics, c:ComponentImpl) {
+        g.opacity = c.calcOpacity();
+        var x:Float = c.screenX;
+        var y:Float = c.screenY;
+        var w:Float = c.width;
+        var h:Float = c.height;
+        var style:Style = c.style;
+        
+        
         if (style.color != null) {
             g.color = style.color | 0xFF000000;
         } else {
             g.color = Color.Black | 0xFF000000;
         }
 
-        if (_textDisplay != null) {
-            _textDisplay.renderTo(g, x, y);
+        if (c._textDisplay != null) {
+            c._textDisplay.renderTo(g, x * Toolkit.scaleX, y * Toolkit.scaleY);
         }
-
-        if (_textInput != null) {
-            _textInput.renderTo(g, x, y);
-        }
-
-        g.color = Color.White;
-
-        for (c in cast(this, Component).childComponents) {
-            c.renderTo(g);
-        }
-
-        g.opacity = 1;
         
-        if (clipRect != null) {
-            g.disableScissor();
+        if (c._textInput != null) {
+            c._textInput.renderTo(g, x * Toolkit.scaleX, y * Toolkit.scaleY);
         }
+        
+        g.color = Color.White;
+        g.opacity = 1;
     }
 
     private var _componentBuffer:kha.Image;
     public function renderToScaled(g:Graphics, scaleX:Float, scaleY:Float) {
-        var cx:Int = Std.int(cast(this, Component).width);
-        var cy:Int = Std.int(cast(this, Component).height);
+        var cx:Int = Std.int(cast(this, Component).width * Toolkit.scaleX);
+        var cy:Int = Std.int(cast(this, Component).height * Toolkit.scaleY);
 
         if (_componentBuffer == null || _componentBuffer.width != cx || _componentBuffer.height != cy) {
             if (_componentBuffer != null) {
@@ -217,8 +457,14 @@ class ComponentImpl extends ComponentBase {
     //***********************************************************************************************************
     // Events
     //***********************************************************************************************************
+    @:access(haxe.ui.backend.TextInputImpl)
     private override function mapEvent(type:String, listener:UIEvent->Void) {
         switch (type) {
+            case MouseEvent.MOUSE_MOVE:
+                if (_eventMap.exists(MouseEvent.MOUSE_MOVE) == false) {
+                    Mouse.get().notify(null, null, __onMouseMove, null);
+                    _eventMap.set(MouseEvent.MOUSE_MOVE, listener);
+                }
             case MouseEvent.MOUSE_OVER:
                 if (_eventMap.exists(MouseEvent.MOUSE_OVER) == false) {
                     Mouse.get().notify(null, null, __onMouseMove, null);
@@ -260,6 +506,15 @@ class ComponentImpl extends ComponentBase {
                         _eventMap.set(MouseEvent.MOUSE_UP, listener);
                     }
                 }
+			case MouseEvent.DBL_CLICK:
+                if (_eventMap.exists(MouseEvent.DBL_CLICK) == false) {
+                    _eventMap.set(MouseEvent.DBL_CLICK, listener);
+					
+                    if (_eventMap.exists(MouseEvent.MOUSE_UP) == false) {
+                        Mouse.get().notify(null, __onDoubleClick, null, null);
+                        _eventMap.set(MouseEvent.MOUSE_UP, listener);
+                    }
+                }
             case MouseEvent.RIGHT_MOUSE_DOWN:
                 if (_eventMap.exists(MouseEvent.RIGHT_MOUSE_DOWN) == false) {
                     Mouse.get().notify(__onMouseDown, __onMouseUp, null, null);
@@ -295,9 +550,19 @@ class ComponentImpl extends ComponentBase {
                     Keyboard.get().notify(null, __onKeyUp, null);
                     _eventMap.set(KeyboardEvent.KEY_UP, listener);
                 }
+            case UIEvent.CHANGE: 
+                if (_eventMap.exists(type) == false) {
+                    if (hasTextInput() == true) {
+                        getTextInput()._tf.notify(onTextInputChanged, null);
+                    }
+                }
         }
     }
 
+    private function onTextInputChanged(s:String) {
+        dispatch(new UIEvent(UIEvent.CHANGE));
+    }
+    
     private override function unmapEvent(type:String, listener:UIEvent->Void) {
 
     }
@@ -307,6 +572,15 @@ class ComponentImpl extends ComponentBase {
         lastMouseX = x;
         lastMouseY = y;
         var i = inBounds(x, y);
+        if (i == true) {
+            var fn:UIEvent->Void = _eventMap.get(haxe.ui.events.MouseEvent.MOUSE_MOVE);
+            if (fn != null) {
+                var mouseEvent = new haxe.ui.events.MouseEvent(haxe.ui.events.MouseEvent.MOUSE_MOVE);
+                mouseEvent.screenX = x / Toolkit.scaleX;
+                mouseEvent.screenY = y / Toolkit.scaleY;
+                fn(mouseEvent);
+            }
+        }
         if (i == true && _mouseOverFlag == false) {
             if (hasComponentOver(cast this, x, y) == true) {
                 return;
@@ -360,6 +634,7 @@ class ComponentImpl extends ComponentBase {
             if (hasComponentOver(cast this, x, y) == true) {
                 return;
             }
+			
             if (_mouseDownFlag == true) {
                 var type = button == 0 ? haxe.ui.events.MouseEvent.CLICK: haxe.ui.events.MouseEvent.RIGHT_CLICK;
                 var fn:UIEvent->Void = _eventMap.get(type);
@@ -369,6 +644,15 @@ class ComponentImpl extends ComponentBase {
                     mouseEvent.screenY = y / Toolkit.scaleY;
                     fn(mouseEvent);
                 }
+				
+				if (type == haxe.ui.events.MouseEvent.CLICK) {
+					_lastClickTimeDiff = Timer.stamp() - _lastClickTime;
+					_lastClickTime = Timer.stamp();
+					if (_lastClickTimeDiff >= 0.5) { // 0.5 seconds
+						_lastClickX = x;
+						_lastClickY = y;
+					}
+				}
             }
 
             _mouseDownFlag = false;
@@ -380,6 +664,31 @@ class ComponentImpl extends ComponentBase {
                 mouseEvent.screenY = y / Toolkit.scaleY;
                 fn(mouseEvent);
             }
+        }
+        _mouseDownFlag = false;
+    }
+	
+	private function __onDoubleClick(button:Int, x:Int, y:Int) {
+        lastMouseX = x;
+        lastMouseY = y;
+        var i = inBounds(x, y);
+        if (i == true && button == 0) {
+            if (hasComponentOver(cast this, x, y) == true) {
+                return;
+            }
+			
+            _mouseDownFlag = false;
+			var mouseDelta:Float = MathUtil.distance(x, y, _lastClickX, _lastClickY);
+			if (_lastClickTimeDiff < 0.5 && mouseDelta < 5) { // 0.5 seconds
+				var type = haxe.ui.events.MouseEvent.DBL_CLICK;
+				var fn:UIEvent->Void = _eventMap.get(type);
+				if (fn != null) {
+					var mouseEvent = new haxe.ui.events.MouseEvent(type);
+					mouseEvent.screenX = x / Toolkit.scaleX;
+					mouseEvent.screenY = y / Toolkit.scaleY;
+					fn(mouseEvent);
+				}
+			}
         }
         _mouseDownFlag = false;
     }
@@ -472,6 +781,9 @@ class ComponentImpl extends ComponentBase {
             }
 
             r = hasChildRecursive(t, child);
+            if (r == true) {
+                break;
+            }
         }
 
         return r;
