@@ -13,21 +13,21 @@ import kha.graphics2.Graphics;
 
 class StyleHelper {
     public static function paintStyle(g:Graphics, style:Style, x:Float, y:Float, w:Float, h:Float):Void {
+        /*
         x = Math.ffloor(x);
         y = Math.ffloor(y);
         w = Math.fceil(w);
         h = Math.fceil(h);
+        */
 
         if (w <= 0 || h <= 0) {
             return;
         }
 
-        /*
         x = Std.int(x);
         y = Std.int(y);
         w = Std.int(w);
         h = Std.int(h);
-        */
         
         x *= Toolkit.scaleX;
         y *= Toolkit.scaleY;
@@ -104,6 +104,10 @@ class StyleHelper {
                 if (slice == null) {
                     if (style.backgroundImageRepeat == null) {
                         g.drawSubImage(imageInfo.data, x, y, 0, 0, trc.width, trc.height);
+                    } else if (style.backgroundImageRepeat == "stretch") {
+                        g.drawScaledImage(imageInfo.data, x, y, w, h);
+                    } else {
+                        g.drawSubImage(imageInfo.data, x, y, 0, 0, trc.width, trc.height);
                     }
                 } else {
                     var rects:Slice9Rects = Slice9.buildRects(w, h, trc.width, trc.height, slice);
@@ -122,7 +126,12 @@ class StyleHelper {
             });
         }
         
-        if (style.borderLeftColor != null
+        if (style.borderLeftSize != null &&
+            style.borderLeftSize == style.borderRightSize &&
+            style.borderLeftSize == style.borderBottomSize &&
+            style.borderLeftSize == style.borderTopSize
+            
+            && style.borderLeftColor != null
             && style.borderLeftColor == style.borderRightColor
             && style.borderLeftColor == style.borderBottomColor
             && style.borderLeftColor == style.borderTopColor) { // full border
@@ -162,7 +171,7 @@ class StyleHelper {
         
         if (style.filter != null) {
             var f:Filter = style.filter[0];
-            if (Std.is(f, DropShadow)) {
+            if ((f is DropShadow)) {
                 var dropShadow:DropShadow = cast(f, DropShadow);
                 if (dropShadow.inner == true) {
                     drawShadow(g, dropShadow.color, x, y, w, h, Std.int(dropShadow.distance), dropShadow.inner);
