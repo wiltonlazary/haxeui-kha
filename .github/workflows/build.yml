@@ -1,32 +1,37 @@
-name: Build (linux, all targets, all haxe versions)
+name: Build
 
 on: [push, repository_dispatch]
 
 jobs:
   build:
-
     runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
         os: [ubuntu-latest]
-        haxe-version: [3.4.4, 4.0.3]
+        haxe-version: [3.4.7, 4.0.5, 4.1.5, 4.2.2]
         target: [html5, linux]
 
     steps:
     - uses: actions/checkout@v1
-    - uses: haxeui/haxeui-core/.github/actions/haxe@master
+    - name: Setup Haxe (haxe ${{ matrix.haxe-version }}, ${{ matrix.os }})
+      uses: krdlab/setup-haxe@v1
       with:
         haxe-version: ${{ matrix.haxe-version }}
 
     - name: Setup app (haxe ${{ matrix.haxe-version }}, ${{ matrix.os }})
       run: |
+        sudo apt-get update
         sudo apt-get install libxinerama-dev
         sudo apt-get install libasound2-dev
         sudo apt-get install mesa-common-dev
         sudo apt-get install libgl-dev
         sudo apt-get install libxi-dev
         sudo apt-get install zip
+        sudo apt-get install libxrandr-dev
+        sudo apt-get install libudev-dev
+        sudo apt-get install libx11-dev
+        sudo apt-get install libxcursor-dev
         git clone --recursive --single-branch --depth=1 https://github.com/Kode/Kha.git
         mkdir Libraries
         cd Libraries
@@ -38,7 +43,7 @@ jobs:
         cd src
         printf "package;\n\nclass Main {\npublic static function main() {\n}\n}" > Main.hx
         cd ..
-        cp Libraries/haxeui-kha/khafile.js khafile.js
+        cp Libraries/haxeui-kha/.github/workflows/khafile.js khafile.js
 
     - name: Build app (${{ matrix.target }}, haxe ${{ matrix.haxe-version }}, ${{ matrix.os }})
       run: |

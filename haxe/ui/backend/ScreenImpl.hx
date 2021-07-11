@@ -1,5 +1,6 @@
 package haxe.ui.backend;
 
+import haxe.ui.Toolkit;
 import haxe.ui.backend.kha.MouseHelper;
 import haxe.ui.core.Component;
 import haxe.ui.events.MouseEvent;
@@ -26,6 +27,14 @@ class ScreenImpl extends ScreenBase {
         return System.windowHeight() / Toolkit.scaleY;
     }
 
+    private override function get_actualWidth():Float {
+        return System.windowWidth();
+    }
+
+    private override function get_actualHeight():Float {
+        return System.windowHeight();
+    }
+    
     private override function get_dpi():Float {
         return Display.primary.pixelsPerInch;
     }
@@ -49,7 +58,7 @@ class ScreenImpl extends ScreenBase {
     }
 
     public override function addComponent(component:Component):Component {
-        _topLevelComponents.push(component);
+        rootComponents.push(component);
         addResizeListener();
         resizeComponent(component);
         //component.dispatchReady();
@@ -57,12 +66,12 @@ class ScreenImpl extends ScreenBase {
     }
 
     public override function removeComponent(component:Component):Component {
-        _topLevelComponents.remove(component);
+        rootComponents.remove(component);
 		return component;
     }
 
     public function renderTo(g:Graphics) {
-        for (c in _topLevelComponents) {
+        for (c in rootComponents) {
             c.renderTo(g);
         }
         updateFPS(g);
@@ -129,9 +138,7 @@ class ScreenImpl extends ScreenBase {
 
         _hasListener = true;
         kha.Window.get(0).notifyOnResize(function(w:Int,h:Int) {
-            for (c in _topLevelComponents) {
-                resizeComponent(c);
-            }
+            resizeRootComponents();
         });
     }
 

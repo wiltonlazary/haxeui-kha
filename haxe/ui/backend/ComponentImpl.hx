@@ -1,6 +1,8 @@
 package haxe.ui.backend;
 
 import haxe.Timer;
+import haxe.ui.Toolkit;
+import haxe.ui.backend.kha.ImageCache;
 import haxe.ui.backend.kha.MouseHelper;
 import haxe.ui.backend.kha.ScissorHelper;
 import haxe.ui.backend.kha.StyleHelper;
@@ -17,7 +19,6 @@ import kha.graphics2.Graphics;
 import kha.graphics2.ImageScaleQuality;
 import kha.input.KeyCode;
 import kha.input.Keyboard;
-import kha.input.Mouse;
 
 class ComponentImpl extends ComponentBase {
     private var _eventMap:Map<String, UIEvent->Void>;
@@ -66,8 +67,13 @@ class ComponentImpl extends ComponentBase {
         var xpos:Float = 0;
         var ypos:Float = 0;
         while (c != null) {
-            xpos += c.left;
-            ypos += c.top;
+            if (c.parentComponent == null) {
+                xpos += c.left / Toolkit.scaleX;
+                ypos += c.top / Toolkit.scaleY;
+            } else {
+                xpos += c.left;
+                ypos += c.top;
+            }
             if (c.componentClipRect != null) {
                 xpos -= c.componentClipRect.left;
                 ypos -= c.componentClipRect.top;
@@ -367,6 +373,7 @@ class ComponentImpl extends ComponentBase {
         }
     }
     
+    private var _prevStyle:Style = null;
     private function renderStyleTo(g:Graphics, c:ComponentImpl) {
         g.opacity = c.calcOpacity();
         var x:Float = c.screenX;
@@ -375,7 +382,17 @@ class ComponentImpl extends ComponentBase {
         var h:Float = c.height;
         var style:Style = c.style;
         
-        StyleHelper.paintStyle(g, style, x, y, w, h);
+        var usePrevStyle:Bool = false;
+        if (style.backgroundImage != null) {
+            usePrevStyle = !ImageCache.has(style.backgroundImage);
+        }
+        
+        if (usePrevStyle == false) {
+            StyleHelper.paintStyle(g, style, x, y, w, h);
+            c._prevStyle = style;
+        } else if (c._prevStyle != null) {
+            StyleHelper.paintStyle(g, c._prevStyle, x, y, w, h);
+        }
         
         g.opacity = 1;
     }
@@ -390,7 +407,7 @@ class ComponentImpl extends ComponentBase {
         var imageX = (x + c._imageDisplay.left) * Toolkit.scaleX;
         var imageY = (y + c._imageDisplay.top) * Toolkit.scaleY;
         var orgScaleQuality = g.imageScaleQuality;
-        g.imageScaleQuality = ImageScaleQuality.High;
+        g.imageScaleQuality = ImageScaleQuality.Low;
         if (c._imageDisplay.scaled == true) {
             g.drawScaledImage(c._imageDisplay._buffer, imageX, imageY, c._imageDisplay.imageWidth, c._imageDisplay.imageHeight);
         } else if (Toolkit.scale != 1) {
